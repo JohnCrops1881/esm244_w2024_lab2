@@ -1,0 +1,190 @@
+---
+title: "ingman_esm244_lab2_quarto"
+format: 
+  html:
+    code-fold: show
+    toc: true
+    number-sections: true
+editor: visual
+execute:
+  echo: true
+  message: false
+  warning: false
+---
+
+```{r setup}
+
+#install.packages("tsibble")
+#install.packages("feasts")
+#install.packages("fable")
+
+library(tidyverse)
+library(here)
+library(tsibble)
+library(feasts)
+library(fable)
+```
+
+```{r Time Series with Toolik Lake Data}
+
+toolik_df <- read.csv(here('data/toolik_daily.csv'))
+
+toolik_ts <- toolik_df %>%
+  mutate(date = lubridate::mdy(date)) %>% 
+  as_tsibble(key = NULL, ### if dates by multiple sites, key by site
+             index = date)
+
+ggplot(toolik_ts, aes(x = date, y = daily_air_temp)) +
+  geom_line() +
+  labs(x = 'Date', y = 'Mean daily air temp (Celsius)\n at Toolik Station')
+```
+
+## Using the filter\_ index function to filter by date / time
+
+```{r filter_index}
+
+toolik_ts %>% 
+  filter_index("2018-01-01" ~ .)
+
+```
+
+```{r index_by}
+
+toolik_month <- toolik_ts %>% 
+  index_by(yr_mo = ~yearmonth(.)) %>% 
+  summarize(monthly_mean_temp = mean(daily_air_temp, na.rm = TRUE)) %>% 
+    ungroup()
+
+```
+
+```{r}
+
+ggplot(data = toolik_month, aes(x = yr_mo, y = monthly_mean_temp)) +
+  geom_line()
+
+ggplot(toolik_month, aes(x = year(yr_mo), y = monthly_mean_temp)) +
+  geom_line() +
+  facet_wrap(~ month (yr_mo))
+  labs(x = "Year",
+       y = "Annual mean air temperature (Celsius)",
+       title = "Toolik Station mean annual air temperature",
+       subtitle = "1988 - 2018",
+       caption = "Source: Shaver, G. 2019. A multi-year DAILY weather file
+                  for the Toolik Field Station at Toolik Lake, AK starting
+                  1988 to present. ver 4. Environmental Data Initiative.")
+```
+
+## Part 2
+
+Energy usage by sector, in trillions of BTUs
+
+```{r}
+
+energy_df <- read.csv(here('data', 'energy.csv'))
+```
+
+### Analysis goals:
+
+-   Examine patterns and trends in residential energy consumption over time.
+
+-   Predict what residential energy patterns will look like over the next five years.
+
+Pseudocode:
+
+-   Make a data frame then turn the data frame into a time series
+
+-   Filter to look at residential data
+
+-   Convert yr-month to a date
+
+-   Explore data with a ggplot to look for trends, seasonality
+
+-   Identify trends, patterns before forecasting
+
+```{r energy_forecasting}
+
+energy_ts <- energy_df %>% 
+  mutate(date = tsibble::yearmonth(yrmonth)) %>%
+  as_tsibble(index = date,
+            key = sector)
+
+```
+
+```{r}
+
+ggplot(data = energy_ts, aes(x = date, y = energy_total, color = sector)) +
+  geom_line() +
+  labs(y = "Energy consumption by sector \n (Trillion BTU)")
+```
+
+```{r}
+energy_ts %>% 
+  filter(sector == 'residential') %>%
+  gg_season(y = energy_total, pal = hcl.colors(n = 9)) +
+  theme_minimal() +
+  labs(x = "month",
+       y = "residential energy consumption (trillion BTU)")
+```
+
+```{r}
+
+energy_ts %>% 
+  gg_subseries(y = energy_total)
+```
+
+## Decomposition
+
+```{r}
+
+dcmp <- energy_ts %>%
+  filter(sector == 'residential') %>%
+  model(feasts::STL(energy_total ~ season(period = '1 year') + 
+                      trend(window = 25)))
+
+components(dcmp) %>% 
+  autoplot()+
+  theme_minimal()
+```
+
+## Autocorrelation
+
+```{r}
+energy_ts %>% 
+  filter(sector == 'residential') %>%
+  ACF(energy_total) %>% 
+  autoplot()
+```
+
+### Forecasting by Holt-Winters exponential smoothing
+
+Specify each component
+
+-   None (N)
+
+-   Additive (A)
+
+-   Multiplicative (M)
+
+```{r}
+
+energy_fit <- energy_ts %>% 
+  filter(sector == 'residential') %>% 
+  filter_index('2000-01' ~ .) %>% 
+  model(ets = ETS(energy_total ~ season(method = "M") + trend(method = "A")))
+
+energy_forecast <- energy_fit %>% 
+  forecast(h = "5 years")
+
+energy_forecast %>% 
+  autoplot(energy_ts)
+```
+
+```{r}
+
+energy_predicted <- energy_fit %>% 
+  broom::augment()
+
+ggplot(energy_predicted) +
+  geom_line(aes(x = date, y = energy_total)) +
+  geom_line(aes(x = date, y = .fitted), color = "red", alpha = .7)
+```
